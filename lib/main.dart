@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,7 +16,6 @@ void main() {
 }
 
 const dayNames = ['الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت', 'الأحد'];
-const dayShort = ['إث', 'ثل', 'أر', 'خم', 'جم', 'سب', 'أح'];
 const monthNames = [
   'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
   'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'
@@ -44,29 +44,49 @@ LinearGradient gradientFor(DateTime d) => LinearGradient(
 
 class Zone {
   final String name;
-  final int? hours; // null = تلقائي من الجهاز
-  const Zone(this.name, this.hours);
+  final int? minutes; // null = تلقائي من الجهاز
+  const Zone(this.name, this.minutes);
 }
 
+// فروق ثابتة (بدون توقيت صيفي)، والأول تلقائي من الجهاز
 const zones = [
   Zone('تلقائي (الجهاز)', null),
-  Zone('ليبيا (+2)', 2),
-  Zone('مصر (+2)', 2),
-  Zone('السودان (+2)', 2),
-  Zone('فلسطين (+2)', 2),
-  Zone('تونس (+1)', 1),
-  Zone('الجزائر (+1)', 1),
-  Zone('المغرب (+1)', 1),
-  Zone('السعودية (+3)', 3),
-  Zone('العراق (+3)', 3),
-  Zone('الأردن (+3)', 3),
-  Zone('قطر (+3)', 3),
-  Zone('الكويت (+3)', 3),
-  Zone('تركيا (+3)', 3),
-  Zone('الإمارات (+4)', 4),
-  Zone('عُمان (+4)', 4),
+  Zone('ليبيا (+2)', 120),
+  Zone('مصر (+2)', 120),
+  Zone('السودان (+2)', 120),
+  Zone('فلسطين (+2)', 120),
+  Zone('تونس (+1)', 60),
+  Zone('الجزائر (+1)', 60),
+  Zone('المغرب (+1)', 60),
+  Zone('السعودية (+3)', 180),
+  Zone('العراق (+3)', 180),
+  Zone('الأردن (+3)', 180),
+  Zone('قطر (+3)', 180),
+  Zone('الكويت (+3)', 180),
+  Zone('تركيا (+3)', 180),
+  Zone('الإمارات (+4)', 240),
+  Zone('عُمان (+4)', 240),
+  Zone('بريطانيا (0)', 0),
+  Zone('فرنسا / ألمانيا / إيطاليا (+1)', 60),
+  Zone('روسيا - موسكو (+3)', 180),
+  Zone('باكستان (+5)', 300),
+  Zone('الهند (+5:30)', 330),
+  Zone('بنغلاديش (+6)', 360),
+  Zone('إندونيسيا - جاكرتا (+7)', 420),
+  Zone('الصين / ماليزيا (+8)', 480),
+  Zone('اليابان / كوريا (+9)', 540),
+  Zone('أستراليا - سيدني (+10)', 600),
+  Zone('البرازيل - برازيليا (-3)', -180),
+  Zone('أمريكا - نيويورك (-5)', -300),
+  Zone('أمريكا - شيكاغو (-6)', -360),
+  Zone('أمريكا - لوس أنجلوس (-8)', -480),
   Zone('UTC (0)', 0),
 ];
+
+Duration offsetOfZone(int i) {
+  final m = zones[i].minutes;
+  return m == null ? DateTime.now().timeZoneOffset : Duration(minutes: m);
+}
 
 String two(int n) => n.toString().padLeft(2, '0');
 
@@ -83,6 +103,12 @@ String zoneLabel(int i) {
   if (i != 0) return zones[i].name;
   final n = DateTime.now();
   return 'تلقائي (${n.timeZoneName} ${offsetLabel(n.timeZoneOffset)})';
+}
+
+String timeStr(DateTime t, bool is24) {
+  if (is24) return '${two(t.hour)}:${two(t.minute)}';
+  final h = t.hour % 12 == 0 ? 12 : t.hour % 12;
+  return '$h:${two(t.minute)} ${t.hour < 12 ? 'ص' : 'م'}';
 }
 
 class Glass extends StatelessWidget {
@@ -149,15 +175,13 @@ class _HomePageState extends State<HomePage> {
   static const center = 36500;
   int zoneIndex = 0;
   int page = center;
+  bool is24 = true;
   late DateTime now;
   Timer? timer;
   late final PageController pc =
       PageController(initialPage: center, viewportFraction: 0.84);
 
-  Duration get offset {
-    final h = zones[zoneIndex].hours;
-    return h == null ? DateTime.now().timeZoneOffset : Duration(hours: h);
-  }
+  Duration get offset => offsetOfZone(zoneIndex);
 
   DateTime get zoneNow => DateTime.now().toUtc().add(offset);
   DateTime get today {
@@ -175,6 +199,46 @@ class _HomePageState extends State<HomePage> {
     timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => now = zoneNow);
     });
+    _loadPrefs();
+  }
+
+  Future<void> _loadPrefs() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      final v = p.getBool('is24');
+      final z = p.getInt('zone');
+      if (!mounted) return;
+      setState(() {
+        if (v != null) is24 = v;
+        if (z != null && z >= 0 && z < zones.length) {
+          zoneIndex = z;
+          now = zoneNow;
+        }
+      });
+    } catch (_) {}
+  }
+
+  Future<void> toggleFormat() async {
+    HapticFeedback.selectionClick();
+    setState(() => is24 = !is24);
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setBool('is24', is24);
+    } catch (_) {}
+  }
+
+  Future<void> selectZone(int i) async {
+    HapticFeedback.selectionClick();
+    setState(() {
+      zoneIndex = i;
+      page = center;
+      now = zoneNow;
+    });
+    if (pc.hasClients) pc.jumpToPage(center);
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setInt('zone', i);
+    } catch (_) {}
   }
 
   @override
@@ -224,28 +288,33 @@ class _HomePageState extends State<HomePage> {
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
       builder: (_) => DraggableScrollableSheet(
-        initialChildSize: 0.6,
-        maxChildSize: 0.9,
+        initialChildSize: 0.7,
+        maxChildSize: 0.92,
         minChildSize: 0.4,
         expand: false,
         builder: (_, sc) => Glass(
           radius: 28,
-          opacity: 0.35,
+          opacity: 0.4,
           tint: const Color(0xFF10151F),
           child: ListView.builder(
             controller: sc,
             padding: const EdgeInsets.symmetric(vertical: 12),
             itemCount: zones.length,
-            itemBuilder: (_, i) => ListTile(
-              title: Text(zoneLabel(i)),
-              trailing: i == zoneIndex ? const Icon(Icons.check_circle) : null,
-              onTap: () => Navigator.pop(context, i),
-            ),
+            itemBuilder: (_, i) {
+              final t = DateTime.now().toUtc().add(offsetOfZone(i));
+              return ListTile(
+                title: Text(zoneLabel(i)),
+                subtitle: Text(timeStr(t, is24)),
+                trailing:
+                    i == zoneIndex ? const Icon(Icons.check_circle) : null,
+                onTap: () => Navigator.pop(context, i),
+              );
+            },
           ),
         ),
       ),
     );
-    if (i != null) setState(() => zoneIndex = i);
+    if (i != null) selectZone(i);
   }
 
   Widget dayCard(int i) {
@@ -348,11 +417,11 @@ class _HomePageState extends State<HomePage> {
   Widget weekStrip() {
     final d = shown;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 10),
       child: Glass(
         radius: 24,
         opacity: 0.1,
-        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
         child: Row(
           children: List.generate(7, (k) {
             final off = k - 3;
@@ -368,17 +437,29 @@ class _HomePageState extends State<HomePage> {
                 },
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 250),
-                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  margin: const EdgeInsets.symmetric(horizontal: 1),
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
                   decoration: BoxDecoration(
                     color: sel ? Colors.white : Colors.transparent,
                     borderRadius: BorderRadius.circular(16),
                   ),
                   child: Column(
                     children: [
-                      Text(dayShort[day.weekday - 1],
-                          style: TextStyle(
-                              fontSize: 12,
-                              color: sel ? Colors.black54 : Colors.white60)),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(dayNames[day.weekday - 1],
+                              maxLines: 1,
+                              softWrap: false,
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color:
+                                      sel ? Colors.black54 : Colors.white70)),
+                        ),
+                      ),
                       const SizedBox(height: 4),
                       Text('${day.day}',
                           style: TextStyle(
@@ -407,6 +488,45 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Widget clock() {
+    final h = now.hour;
+    final hh = is24 ? two(h) : '${h % 12 == 0 ? 12 : h % 12}';
+    return GestureDetector(
+      onTap: toggleFormat,
+      behavior: HitTestBehavior.opaque,
+      child: Directionality(
+        textDirection: TextDirection.ltr,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            Text('$hh:${two(now.minute)}',
+                style: const TextStyle(
+                    fontSize: 64,
+                    fontWeight: FontWeight.w200,
+                    letterSpacing: 2,
+                    color: Colors.white)),
+            const SizedBox(width: 6),
+            Text(two(now.second),
+                style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w300,
+                    color: Colors.white.withOpacity(0.6))),
+            if (!is24) ...[
+              const SizedBox(width: 8),
+              Text(h < 12 ? 'ص' : 'م',
+                  style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white)),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final d = shown;
@@ -422,8 +542,32 @@ class _HomePageState extends State<HomePage> {
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: Row(
                   children: [
+                    Flexible(
+                      child: GestureDetector(
+                        onTap: pickZone,
+                        child: Glass(
+                          radius: 20,
+                          opacity: 0.14,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.public, size: 16),
+                              const SizedBox(width: 6),
+                              Flexible(
+                                child: Text(zoneLabel(zoneIndex),
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 12)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
                     GestureDetector(
-                      onTap: pickZone,
+                      onTap: toggleFormat,
                       child: Glass(
                         radius: 20,
                         opacity: 0.14,
@@ -432,41 +576,21 @@ class _HomePageState extends State<HomePage> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.public, size: 16),
+                            const Icon(Icons.schedule, size: 16),
                             const SizedBox(width: 6),
-                            Text(zoneLabel(zoneIndex),
-                                style: const TextStyle(fontSize: 12)),
+                            Text(is24 ? '24 س' : '12 س',
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700)),
                           ],
                         ),
                       ),
                     ),
-                    const Spacer(),
                   ],
                 ),
               ),
               const SizedBox(height: 12),
-              Directionality(
-                textDirection: TextDirection.ltr,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.baseline,
-                  textBaseline: TextBaseline.alphabetic,
-                  children: [
-                    Text('${two(now.hour)}:${two(now.minute)}',
-                        style: const TextStyle(
-                            fontSize: 64,
-                            fontWeight: FontWeight.w200,
-                            letterSpacing: 2,
-                            color: Colors.white)),
-                    const SizedBox(width: 6),
-                    Text(two(now.second),
-                        style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.w300,
-                            color: Colors.white.withOpacity(0.6))),
-                  ],
-                ),
-              ),
+              clock(),
               const SizedBox(height: 8),
               Expanded(
                 child: PageView.builder(
